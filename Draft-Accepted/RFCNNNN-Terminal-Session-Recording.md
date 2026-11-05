@@ -14,7 +14,7 @@ Plan to implement: Yes
 This RFC proposes extending `Start-Transcript` with the ability to record the complete
 terminal session — including full-screen, interactive TUI applications — as a
 time-stamped terminal stream, and to save that recording either in the open
-[asciicast v2](https://github.com/asciinema/asciinema/blob/develop/doc/asciicast-v2.md)
+[asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/)
 format or rendered as a video file (animated GIF, WebM, or MP4).
 
 This brings to PowerShell a capability equivalent to session recording on
@@ -40,6 +40,12 @@ The result, as discussed in
 [PowerShell/PowerShell#28296](https://github.com/PowerShell/PowerShell/discussions/28296),
 is that a transcript of such a session is effectively empty for the duration of the TUI
 application. `Start-Transcript` today is, at best, a best-effort text log for TUI programs.
+
+Existing recording tools do not fill this gap for PowerShell users: `script(1)` and
+`asciinema` only record sessions launched from their own wrapper — and the asciinema CLI
+[does not support Windows at all](https://github.com/orgs/asciinema/discussions/278) —
+while RHEL's `tlog` operates at the system/PAM layer and is unavailable on other
+platforms or on hosts an organization does not fully control.
 
 Several real-world scenarios need full-fidelity capture:
 
@@ -71,9 +77,9 @@ Goals:
   output, native command output, colors, cursor movement, progress rendering, alternate
   screen buffer usage by TUI applications, and terminal resizes — with accurate timing.
 - Keep the existing text transcript behavior completely unchanged; recording is additive.
-- Use a **portable, open format** (asciicast v2) as the source of truth, so recordings
-  interoperate with the existing ecosystem (`asciinema play`, `agg`, `ttyplot`-style
-  tooling) instead of inventing a new container.
+- Use a **portable, open format** (asciicast v3) as the source of truth, so recordings
+  interoperate with the existing ecosystem (`asciinema play`, `agg`, and other
+  asciicast-compatible tooling) instead of inventing a new container.
 - Provide **video output** (animated GIF built-in; WebM/MP4 when `ffmpeg` is available)
   for sharing and documentation scenarios.
 - Work cross-platform: Windows (pseudo-console/ConPTY), Linux and macOS (PTY).
@@ -115,7 +121,7 @@ Three artifacts are produced:
 | File | Contents |
 | ---- | -------- |
 | `session01.txt` | The existing text transcript (unchanged behavior) |
-| `session01.cast` | Time-stamped terminal stream (asciicast v2) |
+| `session01.cast` | Time-stamped terminal stream (asciicast v3) |
 | `session01.gif` | Rendered video, only when a video format was requested |
 
 ### Recording directly to video
@@ -138,11 +144,11 @@ End of terminal recording: .\demo\intro.cast (duration 00:01:12), video: .\demo\
 
 ### Replaying a recording
 
-Recordings use the standard asciicast v2 format and play back with existing tooling:
+Recordings use the standard asciicast v3 format and play back with existing tooling:
 
 ```powershell
 asciinema play .\audit\session01.cast   # full-fidelity replay, original timing
-agg .\audit\session01.cast out.gif      # third-party render to GIF
+agg .\audit\session01.cast out.gif      # render to GIF with agg
 ```
 
 ### Optional: recording user input
@@ -219,22 +225,30 @@ applications bypass stdin/stdout and write directly to the console device:
 The recorder writes events incrementally (streaming, line-buffered), so a crashed or
 killed session still leaves a playable `.cast` file up to the last flushed event.
 
-### Recording file format (asciicast v2)
+### Recording file format (asciicast v3)
 
-The `.cast` file conforms to [asciicast v2](https://github.com/asciinema/asciinema/blob/develop/doc/asciicast-v2.md):
-a JSON header line followed by JSON event lines:
+The `.cast` file conforms to
+[asciicast v3](https://docs.asciinema.org/manual/asciicast/v3/) — the current generation
+of the format, used by asciinema CLI 3.x, the asciinema player, and the asciinema server.
+It is newline-delimited JSON: a header line followed by event lines, where each event is
+a 3-element array `[interval, code, data]` — the time in seconds since the *previous*
+event, the event code, and the event data:
 
 ```json
-{"version": 2, "width": 120, "height": 30, "timestamp": 1762300800, "env": {"SHELL": "pwsh", "TERM": "xterm-256color"}, "title": "PowerShell terminal recording"}
-[0.031234, "o", "\u001b]0;PowerShell\u0007"]
-[0.104512, "o", "PS C:\\> sconfig\r\n"]
-[0.418003, "o", "\u001b[?1049h\u001b[H\u001b[2J"]
+{"version": 3, "term": {"cols": 120, "rows": 30, "type": "xterm-256color"}, "timestamp": 1762300800, "env": {"SHELL": "pwsh", "TERM": "xterm-256color"}, "title": "PowerShell terminal recording"}
+[0.031, "o", "\u001b]0;PowerShell\u0007"]
+[0.073, "o", "PS C:\\> sconfig\r\n"]
+[0.314, "o", "\u001b[?1049h\u001b[H\u001b[2J"]
+[2.410, "x", "0"]
 ```
 
-Event types used: `o` (output), `i` (input, only with `-RecordInput`), `r` (resize).
-Choosing an established open format means PowerShell recordings immediately work with
-`asciinema play`, `agg`, and other tooling, and gives auditors a text-diffable, greppable
-artifact.
+Event types used: `o` (output), `i` (input, only with `-RecordInput`), `r` (resize), and
+`x` (exit status, written once when the recording is finalized). Choosing an established
+open format means PowerShell recordings immediately work with `asciinema play`, `agg`,
+and other tooling, and gives auditors a text-diffable, greppable artifact. Consumers
+that still expect the older [asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/)
+are supported as well: the asciinema CLI converts recordings between v2/v3, raw terminal
+output, and plain text.
 
 ### Video rendering
 
@@ -317,7 +331,7 @@ Policy-enabled recording overrides an explicit `Start-Transcript` invocation onl
    fidelity for audit, and cannot work over SSH sessions. The stream-recording approach
    is cross-platform, tiny, and text-addressable; video is produced by rendering when
    needed.
-5. **Invent a new recording format.** Rejected in favor of asciicast v2 for ecosystem
+5. **Invent a new recording format.** Rejected in favor of asciicast v3 for ecosystem
    interoperability (`asciinema`, `agg`) and prior art (`script` timing files, tlog JSON
    events use the same timestamped-event model).
 6. **Delegate entirely to the terminal emulator** (Windows Terminal, VS Code). Not all
@@ -328,6 +342,6 @@ Policy-enabled recording overrides an explicit `Start-Transcript` invocation onl
 
 - Discussion: [What should the transcript ideally capture when a TUI application starts in PowerShell?](https://github.com/PowerShell/PowerShell/discussions/28296)
 - [console-logger](https://github.com/rhubarb-geek-nz/console-logger) — proof on Windows that a pseudo-console wrapper can display *and* capture interactive programs
-- [tlog](https://github.com/Scribery/tlog) / [SSSD session recording](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/configuring_and_managing_session_recording/index) — the RHEL/PAM system-wide precedent
-- [asciinema](https://asciinema.org/) and [asciicast v2 format](https://github.com/asciinema/asciinema/blob/develop/doc/asciicast-v2.md)
+- [tlog](https://github.com/Scribery/tlog) / [SSSD session recording](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/8/html/configuring_and_managing_session_recording/index) — the RHEL/PAM system-wide precedent
+- [asciinema](https://asciinema.org/), [asciicast v3 format](https://docs.asciinema.org/manual/asciicast/v3/) ([v2](https://docs.asciinema.org/manual/asciicast/v2/) remains documented for compatibility)
 - [RFC0041 - Policy](../Final/RFC0041-Policy.md)
